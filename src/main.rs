@@ -320,7 +320,7 @@ fn convert_osgb(src: &str, dest: &str, config: &str) {
                             };
                             unsafe {
                                 use std::ffi::CString;
-                                let wkt: String = metadata.SRS;
+                                let wkt: String = metadata.SRS.clone();//add .clone() by dajiang
                                 // println!("{:?}", wkt);
                                 let c_str = CString::new(gdal_data).unwrap();
                                 let ptr = c_str.as_ptr();

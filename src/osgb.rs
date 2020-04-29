@@ -92,7 +92,8 @@ fn str_to_vec_c(str: &str) -> Vec<u8> {
     buf
 }
 
-#[derive(Debug)]
+//#[derive(Debug)]
+#[derive(Debug,Serialize, Deserialize)] //add by dajiang 参考之前的定义方式
 struct TileResult {
     json: String,
     path: String,
@@ -125,6 +126,7 @@ pub fn osgb_batch_convert(
 
     let (sender, receiver) = channel();
     let mut osgb_dir_pair: Vec<OsgbInfo> = vec![];
+	let mut osgb_dir_pair2: Vec<OsgbInfo> = vec![];
     let mut task_count = 0;
     fs::create_dir_all(dir_dest)?;
     for entry in fs::read_dir(&path)? {
@@ -145,6 +147,12 @@ pub fn osgb_batch_convert(
                     out_dir: out_dir.to_string_lossy().into(),
                     sender: sender.clone(),
                 });
+                //add by dajiang
+                osgb_dir_pair2.push(OsgbInfo{
+                    in_dir: osgb.to_string_lossy().into(),
+                    out_dir: out_dir.to_string_lossy().into(),
+                    sender: sender.clone()
+                });
             } else {
                 error!("dir error: {}", osgb.display());
             }
@@ -161,6 +169,25 @@ pub fn osgb_batch_convert(
             let mut root_box = vec![0f64; 6];
             let mut json_buf = vec![];
             let mut json_len = 0i32;
+
+            //******start add by dajiang 如果瓦片目录下存在temp.json，此瓦片已处理完
+            let mut tempjson_file_pathBuf=std::path::PathBuf::from(&info.out_dir);//
+            //let in_file_name=std::path::Path::new(&info.in_dir).file_name().unwrap();
+            //tempjson_file_pathBuf.push(std::path::Path::new(&in_file_name));
+            //tempjson_file_pathBuf.set_extension("b3dm");
+            tempjson_file_pathBuf.push("temp.json");
+            
+           //processedCount=processedCount+1;
+           if(tempjson_file_pathBuf.exists()){
+               
+               println!("[Tile：{} already Processed!]", std::path::Path::new(&info.in_dir).display());
+                return ;
+            }
+            //currentCount=currentCount+1;
+            //println!("[Already Processed{} files!]", processedCount);
+           // println!("[Current Processed{} files!]", currentCount);      
+           //********end
+
             let in_ptr = str_to_vec_c(&info.in_dir);
             let out_ptr = str_to_vec_c(&info.out_dir);
             let out_ptr = osgb23dtile_path(
@@ -194,13 +221,21 @@ pub fn osgb_batch_convert(
 
     // merge and root
     let mut tile_array = vec![];
-    for _ in 0..task_count {
+    //原来方案：通过receiver生成生成tile_array
+    /*for _ in 0..task_count {
         if let Ok(t) = receiver.recv() {
             if !t.json.is_empty() {
                 tile_array.push(t);
             }
         }
-    }
+    }*/
+    //方案二：add by dajiang 遍历所有瓦片目录下的temp.json,生成tile_array
+    for info2 in osgb_dir_pair2.iter(){ 
+       let br =  std::io::BufReader::new(File::open(info2.out_dir.clone() + "/temp.json").unwrap());
+       let tileinfo: TileResult= serde_json::from_reader(br).unwrap();
+       tile_array.push(tileinfo);    
+    };
+
     let mut root_box = vec![-1.0E+38f64, -1.0E+38, -1.0E+38, 1.0E+38, 1.0E+38, 1.0E+38];
     for x in tile_array.iter() {
         for i in 0..3 {

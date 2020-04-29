@@ -2,6 +2,7 @@
 #include <osg/PagedLOD>
 #include <osgDB/ReadFile>
 #include <osgDB/ConvertUTF>
+#include<osgDB/FileUtils>
 #include <osgUtil/Optimizer>
 #include <osgUtil/SmoothingVisitor>
 
@@ -111,9 +112,12 @@ double get_geometric_error(TileBox& bbox){
 #undef max
 #endif // max
 
+    //add by dajiang 对于某些有问题的osgb文件， bbox为空，则默认返回0
+	if (bbox.max.size() == 0 && bbox.min.size() == 0)
+		return 0;
     double max_err = std::max((bbox.max[0] - bbox.min[0]),(bbox.max[1] - bbox.min[1]));
     max_err = std::max(max_err, (bbox.max[2] - bbox.min[2]));
-    return max_err / 20.0;
+    return max_err / 80.0; //dajiang 20->80 测试
 //     const double pi = std::acos(-1);
 //     double round = 2 * pi * 6378137.0 / 128.0;
 //     return round / std::pow(2.0, lvl );
@@ -129,6 +133,127 @@ std::string replace(std::string str, std::string s0, std::string s1) {
     return str.replace(p0, p0 + s0.length() - 1, s1);
 }
 
+//**********add by dajiang start
+void replaceAll(string &strBase, string strSrc, string strDes)
+{
+	string::size_type pos = 0;
+	string::size_type srcLen = strSrc.size();
+	string::size_type desLen = strDes.size();
+	pos = strBase.find(strSrc, pos);
+	while ((pos != string::npos))
+	{
+		strBase.replace(pos, srcLen, strDes);
+		pos = strBase.find(strSrc, (pos + desLen));
+	}
+}
+//转义json字符串 
+enum State { ESCAPED, UNESCAPED };
+std::string escapeJSON(const std::string& input)
+{
+	std::string output;
+	output.reserve(input.length());
+
+	for (std::string::size_type i = 0; i < input.length(); ++i)
+	{
+		switch (input[i]) {
+		case '"':
+			output += "\\\"";
+			break;
+		case '/':
+			output += "\\/";
+			break;
+		case '\b':
+			output += "\\b";
+			break;
+		case '\f':
+			output += "\\f";
+			break;
+		case '\n':
+			output += "\\n";
+			break;
+		case '\r':
+			output += "\\r";
+			break;
+		case '\t':
+			output += "\\t";
+			break;
+		case '\\':
+			output += "\\\\";
+			break;
+		default:
+			output += input[i];
+			break;
+		}
+
+	}
+
+	return output;
+}
+
+std::string unescapeJSON(const std::string& input)
+{
+	State s = UNESCAPED;
+	std::string output;
+	output.reserve(input.length());
+
+	for (std::string::size_type i = 0; i < input.length(); ++i)
+	{
+		switch (s)
+		{
+		case ESCAPED:
+		{
+			switch (input[i])
+			{
+			case '"':
+				output += '\"';
+				break;
+			case '/':
+				output += '/';
+				break;
+			case 'b':
+				output += '\b';
+				break;
+			case 'f':
+				output += '\f';
+				break;
+			case 'n':
+				output += '\n';
+				break;
+			case 'r':
+				output += '\r';
+				break;
+			case 't':
+				output += '\t';
+				break;
+			case '\\':
+				output += '\\';
+				break;
+			default:
+				output += input[i];
+				break;
+			}
+
+			s = UNESCAPED;
+			break;
+		}
+		case UNESCAPED:
+		{
+			switch (input[i])
+			{
+			case '\\':
+				s = ESCAPED;
+				break;
+			default:
+				output += input[i];
+				break;
+			}
+		}
+		}
+	}
+	return output;
+}
+
+//****************end
 std::string get_parent(std::string str) {
     auto p0 = str.find_last_of("/\\");
     if (p0 != std::string::npos)
@@ -191,14 +316,22 @@ osg_tree get_all_tree(std::string& file_name) {
     
     InfoVisitor infoVisitor(get_parent(file_name));
     {   // add block to release Node
-        osg::ref_ptr<osg::Node> root = osgDB::readNodeFiles(fileNames);
-        if (!root) {
-            std::string name = utf8_string(file_name.c_str());
-            LOG_E("read node files [%s] fail!", name.c_str());
-            return root_tile;
+	    try{
+			osg::ref_ptr<osg::Node> root = osgDB::readNodeFiles(fileNames);
+			if (!root) {
+				std::string name = utf8_string(file_name.c_str());
+				LOG_E("read node files [%s] fail!", name.c_str());
+				return root_tile;
+			}
+			root_tile.file_name = file_name;
+			root->accept(infoVisitor);   
         }
-        root_tile.file_name = file_name;
-        root->accept(infoVisitor);    
+		catch (...) {
+            //add by dajiang
+			LOG_E("read node files [%s] fail!", utf8_string(file_name.c_str()).c_str());
+			//LOG_E("Error:[%s]", e.what());
+			return root_tile;
+		}		
     }
     
     for (auto& i : infoVisitor.sub_node_names) {
@@ -960,9 +1093,12 @@ void do_tile_job(osg_tree& tree, std::string out_path, int max_lvl) {
     std::string out_file = out_path;
     out_file += "/";
     out_file += replace(get_file_name(tree.file_name),".osgb",".b3dm");
-    if (!b3dm_buf.empty()) {
-        write_file(out_file.c_str(), b3dm_buf.data(), b3dm_buf.size());
-    }
+	//***edit by dajiang如果不存在，则写b3dm文件
+	if (!osgDB::fileExists(out_file)) {
+		if (!b3dm_buf.empty()) {
+			write_file(out_file.c_str(), b3dm_buf.data(), b3dm_buf.size());
+		}
+	}	
     // test
     // std::string glb_buf;
     // std::vector<mesh_info> v_info;
@@ -1128,6 +1264,19 @@ extern "C" void* osgb23dtile_path(
     void* str = malloc(json.length());
     memcpy(str, json.c_str(), json.length());
     *len = json.length();
+	
+	//**add by dajiang 输出临时json	
+    std::string jsonpath = osg_string(out_path);
+	std::string json2 = "{\"path\":\"" + escapeJSON(jsonpath)+ "\",";
+	json2             += "\"box_v\":[" + std::to_string(root.bbox.max.at(0))+"," + std::to_string(root.bbox.max.at(1)) + "," + std::to_string(root.bbox.max.at(2)) + "," + std::to_string(root.bbox.min.at(0)) + "," + std::to_string(root.bbox.min.at(1)) + "," + std::to_string(root.bbox.min.at(2)) + "],";
+	json2             += "\"json\":\"" + escapeJSON(json) + "\"}";
+	jsonpath = jsonpath + "\\temp.json";	
+	FILE * f = fopen(jsonpath.c_str(), "wt+");
+	if (!f) return false;
+	fwrite(json2.c_str(), 1, json2.length(), f);
+	fclose(f);
+	//****
+	
     return str;
 }
 
